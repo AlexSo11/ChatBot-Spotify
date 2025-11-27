@@ -25,7 +25,7 @@ SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
 # URL de tu web service en Render
-SPOTIFY_SERVICE_URL = "https://spotify-auth-55xa.onrender.com"
+SPOTIFY_SERVICE_URL = "https://chatbot-spotify.onrender.com"
 
 TOKENS_FILE = "tokens.json"
 
