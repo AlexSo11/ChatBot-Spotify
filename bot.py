@@ -1,10 +1,8 @@
-"""bot.py - Bot de Discord completo integrado con Spotify
-Requisitos:
-- Tener .env con DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REDIRECT_URI
-- Tener spotify_auth.py ejecutado al menos una vez para generar tokens.json (el login guarda tokens por usuario)
-- pip install discord.py spotipy python-dotenv
-
-Este archivo usa tokens.json (guardado por spotify_auth) para autenticar a cada usuario individualmente.
+"""bot.py - Bot de Discord con PostgreSQL
+Cambios principales:
+- Ya no usa tokens.json local
+- Consulta tokens directamente desde el web service
+- Funciona tanto local como en la nube
 """
 
 import os
@@ -18,178 +16,151 @@ import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 import requests
 
-# Cargar .env
+# ----------------- Cargar .env -----------------
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
+
 # URL de tu web service en Render
-SPOTIFY_SERVICE_URL = "https://chatbot-spotify.onrender.com"
+SPOTIFY_SERVICE_URL = os.getenv("SPOTIFY_SERVICE_URL", "https://chatbot-spotify.onrender.com")
 
-TOKENS_FILE = "tokens.json"
+print(f"🔗 Conectando al servicio: {SPOTIFY_SERVICE_URL}")
 
-# SpotifyOAuth helper (usado solo para refrescar si tenemos refresh_token)
+# ----------------- SpotifyOAuth helper -----------------
 sp_oauth_helper = SpotifyOAuth(
     client_id=SPOTIFY_CLIENT_ID,
     client_secret=SPOTIFY_CLIENT_SECRET,
     redirect_uri=SPOTIFY_REDIRECT_URI,
-    scope = (
-    "user-read-private "
-    "user-read-email "
-    "user-top-read "
-    "playlist-modify-private "
-    "playlist-modify-public "
-    "playlist-read-private "
-    "playlist-read-collaborative "
-    "user-read-recently-played "
-    "user-read-playback-state "
-    "user-modify-playback-state "
-    "user-read-currently-playing "
-    "user-library-read "
-    "user-library-modify "
-    "streaming"),
+    scope=(
+        "user-read-private "
+        "user-read-email "
+        "user-top-read "
+        "playlist-modify-private "
+        "playlist-modify-public "
+        "playlist-read-private "
+        "playlist-read-collaborative "
+        "user-read-recently-played "
+        "user-read-playback-state "
+        "user-modify-playback-state "
+        "user-read-currently-playing "
+        "user-library-read "
+        "user-library-modify "
+        "streaming"
+    ),
     open_browser=False
 )
 
-# Discord bot
+# ----------------- Discord bot -----------------
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-def get_spotify_token(discord_id):
+# ----------------- Helpers para tokens -----------------
+def get_access_token_for_user(discord_id):
+    """
+    Obtiene token desde el web service remoto (con PostgreSQL)
+    """
     url = f"{SPOTIFY_SERVICE_URL}/get_token?discord_id={discord_id}"
     try:
-        r = requests.get(url, timeout=5)
+        r = requests.get(url, timeout=10)
         r.raise_for_status()
-        return r.json()
+        token_info = r.json()
+        
+        # El web service ya maneja el refresh automáticamente
+        access = token_info.get("access_token")
+        
+        if access:
+            print(f"✅ Token obtenido para {discord_id}")
+        
+        return access
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            print(f"❌ Usuario {discord_id} no tiene token (no ha hecho login)")
+        else:
+            print(f"❌ Error HTTP al obtener token: {e}")
+        return None
     except requests.exceptions.RequestException as e:
-        print(f"❌ Error al obtener token: {e}")
+        print(f"❌ Error de conexión al obtener token: {e}")
         return None
-
-@bot.command()
-async def login(ctx):
-    auth_url = f"{SPOTIFY_SERVICE_URL}/login?discord_id={ctx.author.id}"
-    await ctx.send(f"🔗 Inicia sesión en Spotify:\n{auth_url}")
-
-@bot.command()
-async def test_token(ctx):
-    sp = make_spotify_client_for_user(ctx.author.id)
-    if not sp:
-        await ctx.send("🔴 No estás logueado.")
-        return
-    
-    try:
-        # Probar diferentes endpoints
-        user = sp.current_user()
-        await ctx.send(f"✅ Usuario: {user.get('display_name', user.get('id'))}")
-        await ctx.send(f"✅ País: {user.get('country', 'N/A')}")
-        
-        # Probar búsqueda simple
-        search = sp.search(q="test", limit=1, type="track")
-        await ctx.send(f"✅ Búsqueda funciona")
-        
-        # Probar recomendaciones con género simple
-        recs = sp.recommendations(seed_genres=["pop"], limit=5, market=user.get('country', 'US'))
-        await ctx.send(f"✅ Recomendaciones funcionan: {len(recs['tracks'])} canciones")
-        
-    except Exception as e:
-        await ctx.send(f"❌ Error: {e}")
-
-# ------------------- Helpers para tokens -------------------
-
-def read_tokens():
-    if not os.path.exists(TOKENS_FILE):
-        return {}
-    with open(TOKENS_FILE, "r") as f:
-        try:
-            return json.load(f)
-        except:
-            return {}
-
-
-def write_tokens(data):
-    with open(TOKENS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-
-def get_raw_token_entry(discord_id):
-    data = read_tokens()
-    return data.get(str(discord_id))
-
-
-def normalize_token_entry(entry):
-    """Normaliza varias formas de token guardado:
-    - Si entry es string -> {'access_token': entry}
-    - Si entry es dict con access_token -> devuelve tal cual
-    - Si entry es dict con other keys -> devuelve tal cual
-    """
-    if not entry:
-        return None
-    if isinstance(entry, str):
-        return {"access_token": entry}
-    if isinstance(entry, dict):
-        return entry
-    return None
-
-
-def refresh_if_needed(token_entry):
-    """Si tenemos refresh_token y expires_at, refresca y guarda.
-    Devuelve access_token o None si no es posible.
-    """
-    if not token_entry:
-        return None
-    access = token_entry.get("access_token")
-    refresh = token_entry.get("refresh_token")
-    expires_at = token_entry.get("expires_at")
-
-    # Si no hay info de expiración, devolver el access tal cual (sujeto a caducidad)
-    if not refresh or not expires_at:
-        return access
-
-    if time.time() < expires_at - 60:
-        return access
-
-    # Refrescar usando helper
-    try:
-        new = sp_oauth_helper.refresh_access_token(refresh)
-        # new normalmente contiene 'access_token' y 'expires_in'
-        token_entry["access_token"] = new.get("access_token")
-        token_entry["expires_at"] = int(time.time()) + int(new.get("expires_in", 3600))
-        # si viene refresh_token, actualizar
-        if new.get("refresh_token"):
-            token_entry["refresh_token"] = new.get("refresh_token")
-
-        # guardar en tokens.json
-        data = read_tokens()
-        # buscar la clave que contiene este entry (por valor)
-        for k, v in data.items():
-            # comparar por access_token o refresh_token
-            if isinstance(v, dict) and v.get("refresh_token") == refresh or v == refresh:
-                data[k] = token_entry
-                break
-        write_tokens(data)
-
-        return token_entry.get("access_token")
-    except Exception as e:
-        print("Error al refrescar token:", e)
-        return None
-
-
-def get_access_token_for_user(discord_id):
-    entry = get_raw_token_entry(discord_id)
-    normalized = normalize_token_entry(entry)
-    if not normalized:
-        return None
-    token = refresh_if_needed(normalized)
-    return token
-
 
 def make_spotify_client_for_user(discord_id):
+    """Crea cliente Spotify con token del web service"""
     token = get_access_token_for_user(discord_id)
     if not token:
         return None
     return spotipy.Spotify(auth=token)
+
+# ------------------- Eventos -------------------
+
+@bot.event
+async def on_ready():
+    print(f"✅ Bot listo como {bot.user}")
+    print(f"📡 Conectado a {len(bot.guilds)} servidor(es)")
+    print(f"🔗 Servicio de auth: {SPOTIFY_SERVICE_URL}")
+
+@bot.event
+async def on_command_error(ctx, error):
+    """Manejo global de errores"""
+    if isinstance(error, commands.CommandNotFound):
+        return  # Ignorar comandos no encontrados
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(f"❌ Falta un argumento. Usa `!comandos` para ver la ayuda.")
+    else:
+        print(f"Error en comando: {error}")
+        await ctx.send(f"❌ Ocurrió un error: {str(error)}")
+
+# ------------------- Comandos Básicos -------------------
+
+@bot.command()
+async def login(ctx):
+    """Envía el link para iniciar sesión en Spotify"""
+    auth_url = f"{SPOTIFY_SERVICE_URL}/login?discord_id={ctx.author.id}"
+    
+    embed = discord.Embed(
+        title="🔐 Conecta tu cuenta de Spotify",
+        description="Haz clic en el link de abajo para autorizar el bot",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="🔗 Link de autorización", value=auth_url, inline=False)
+    embed.set_footer(text="Después de autorizar, podrás usar todos los comandos del bot")
+    
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def verificar(ctx):
+    """Verifica si el usuario tiene un token válido"""
+    await ctx.send("🔍 Verificando conexión...")
+    
+    access = get_access_token_for_user(ctx.author.id)
+    if not access:
+        embed = discord.Embed(
+            title="🔴 No estás conectado",
+            description="Usa `!login` para conectar tu cuenta de Spotify",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+
+    # Verificar llamando a Spotify
+    try:
+        sp = spotipy.Spotify(auth=access)
+        user = sp.current_user()
+        
+        embed = discord.Embed(
+            title="🟢 Conexión exitosa",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="👤 Usuario", value=user.get('display_name', user.get('id')), inline=True)
+        embed.add_field(name="🌍 País", value=user.get('country', 'N/A'), inline=True)
+        embed.add_field(name="📧 Email", value=user.get('email', 'N/A'), inline=True)
+        embed.set_footer(text=f"ID de Discord: {ctx.author.id}")
+        
+        await ctx.send(embed=embed)
+    except Exception as e:
+        await ctx.send(f"🔴 Token inválido o expirado. Usa `!login` para renovar.\nError: {str(e)}")
+
 
 # ------------------- Eventos y comandos -------------------
 
@@ -200,7 +171,7 @@ async def on_ready():
 
 @bot.command()
 async def comandos(ctx):
-    """Menú principal de comandos - Muestra todas las categorías"""
+    """Menú principal de comandos"""
     embed = discord.Embed(
         title="🎧 Comandos del Bot de Spotify",
         description="Usa `!comandos_<categoría>` para ver comandos específicos",
@@ -222,7 +193,7 @@ async def comandos(ctx):
         inline=False
     )
     
-    embed.set_footer(text="💡 Ejemplo: !comandos_stats para ver comandos de estadísticas")
+    embed.set_footer(text="💡 Primero usa !login para conectar tu Spotify")
 
     await ctx.send(embed=embed)
 
@@ -493,23 +464,19 @@ async def comandos_colaboracion(ctx):
 
 @bot.command()
 async def verificar(ctx):
-    token = get_raw_token_entry(ctx.author.id)
-    if not token:
+    """Verifica si el usuario tiene un token válido en el web service remoto"""
+    access = get_access_token_for_user(ctx.author.id)
+    if not access:
         await ctx.send("🔴 No estás logueado. Usa !login y sigue el link que te envía el bot.")
         return
-    normalized = normalize_token_entry(token)
-    access = normalized.get("access_token") if normalized else None
-    if not access:
-        await ctx.send("🟡 Tienes un token guardado pero incompleto. Usa !login.")
-        return
-    # verificar llamando a spotify
+
+    # verificar llamando a Spotify
     try:
         sp = spotipy.Spotify(auth=access)
         user = sp.current_user()
         await ctx.send(f"🟢 Estás logueado como **{user.get('display_name', user.get('id'))}**")
     except Exception as e:
         await ctx.send("🔴 Token inválido o expirado. Usa !login para renovar.")
-
 
 # ------------------- Comandos de reproducción -------------------
 @bot.command()
@@ -2219,4 +2186,10 @@ async def aceptar_sugerencia(ctx, playlist_nombre: str, numero: int):
         await ctx.send(f"❌ Error: {str(e)}")
 
 # ------------------- Ejecutar -------------------
-bot.run(DISCORD_TOKEN)
+if __name__ == "__main__":
+    if not DISCORD_TOKEN:
+        print("❌ Error: DISCORD_TOKEN no encontrado en .env")
+        exit(1)
+    
+    print("🚀 Iniciando bot...")
+    bot.run(DISCORD_TOKEN)
