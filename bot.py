@@ -1,21 +1,34 @@
-"""bot.py - Bot de Discord con PostgreSQL
-Cambios principales:
-- Ya no usa tokens.json local
-- Consulta tokens directamente desde el web service
-- Funciona tanto local como en la nube
-- modificacion para hacer otro push
+"""
+⠀⠀⠀⠀⠀⢀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⢰⣿⡿⠗⠀⠠⠄⡀⠀⠀⠀⠀
+⠀⠀⠀⠀⡜⠁⠀⠀⠀⠀⠀⠈⠑⢶⣶⡄
+⢀⣶⣦⣸⠀⢼⣟⡇⠀⠀⢀⣀⠀⠘⡿⠃
+⠀⢿⣿⣿⣄⠒⠀⠠⢶⡂⢫⣿⢇⢀⠃⠀
+⠀⠈⠻⣿⣿⣿⣶⣤⣀⣀⣀⣂⡠⠊⠀⠀
+⠀⠀⠀⠃⠀⠀⠉⠙⠛⠿⣿⣿⣧⠀⠀⠀
+⠀⠀⠘⡀⠀⠀⠀⠀⠀⠀⠘⣿⣿⡇⠀⠀
+⠀⠀⠀⣷⣄⡀⠀⠀⠀⢀⣴⡟⠿⠃⠀⠀
+⠀⠀⠀⢻⣿⣿⠉⠉⢹⣿⣿⠁⠀⠀⠀⠀
+⠀⠀⠀⠀⠉⠁⠀⠀⠀⠉⠁
+
+Desarrollo AlexWhite
 """
 
-import os
+import os 
 import json
 import time
 import random
 import discord
-from discord.ext import commands
-from dotenv import load_dotenv
 import spotipy
-from spotipy.oauth2 import SpotifyOAuth
 import requests
+from dotenv import load_dotenv
+from discord.ext import commands
+from spotipy.oauth2 import SpotifyOAuth
+
+
+# +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+==+=+=+=
+# +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=  CONFIGURACIÓN FUNCIONAL  +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=
+# +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+==+=+=+=
 
 # ----------------- Cargar .env -----------------
 load_dotenv()
@@ -154,9 +167,9 @@ async def verificar(ctx):
             color=discord.Color.green()
         )
         embed.add_field(name="👤 Usuario", value=user.get('display_name', user.get('id')), inline=True)
-        embed.add_field(name="🌍 País", value=user.get('country', 'N/A'), inline=True)
-        embed.add_field(name="📧 Email", value=user.get('email', 'N/A'), inline=True)
-        embed.set_footer(text=f"ID de Discord: {ctx.author.id}")
+        #embed.add_field(name="🌍 País", value=user.get('country', 'N/A'), inline=True)
+        #embed.add_field(name="📧 Email", value=user.get('email', 'N/A'), inline=True)
+        #embed.set_footer(text=f"ID de Discord: {ctx.author.id}")
         
         await ctx.send(embed=embed)
     except Exception as e:
@@ -169,6 +182,9 @@ async def verificar(ctx):
 async def on_ready():
     print(f"Bot listo como {bot.user}")
 
+# +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=
+# +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+= MENU DE COMANDOS +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=
+# +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=
 
 @bot.command()
 async def comandos(ctx):
@@ -197,7 +213,6 @@ async def comandos(ctx):
     embed.set_footer(text="💡 Primero usa !login para conectar tu Spotify")
 
     await ctx.send(embed=embed)
-
 
 @bot.command()
 async def comandos_basicos(ctx):
@@ -228,7 +243,6 @@ async def comandos_basicos(ctx):
 
     await ctx.send(embed=embed)
 
-
 @bot.command()
 async def comandos_playlists(ctx):
     embed = discord.Embed(title="📝 Gestión de Playlists", color=discord.Color.blue())
@@ -257,7 +271,6 @@ async def comandos_playlists(ctx):
     )
 
     await ctx.send(embed=embed)
-
 
 @bot.command()
 async def comandos_busqueda(ctx):
@@ -295,7 +308,6 @@ async def comandos_busqueda(ctx):
 
     await ctx.send(embed=embed)
 
-
 @bot.command()
 async def comandos_stats(ctx):
     embed = discord.Embed(title="📊 Estadísticas y Análisis", color=discord.Color.purple())
@@ -317,7 +329,6 @@ async def comandos_stats(ctx):
         name="🔬 Análisis de Audio", 
         value=(
             "`!analizar <canción>` - BPM, energía, positividad\n"
-            "`!similares <canción>` - Canciones parecidas\n"
             "`!energia` - Playlist de alta energía\n"
             "`!relajante` - Playlist tranquila"
         ),
@@ -325,7 +336,6 @@ async def comandos_stats(ctx):
     )
 
     await ctx.send(embed=embed)
-
 
 @bot.command()
 async def comandos_social(ctx):
@@ -353,7 +363,6 @@ async def comandos_social(ctx):
     )"""
 
     await ctx.send(embed=embed)
-
 
 @bot.command()
 async def comandos_tematicas(ctx):
@@ -383,7 +392,6 @@ async def comandos_tematicas(ctx):
     )
 
     await ctx.send(embed=embed)
-
 
 @bot.command()
 async def comandos_auto(ctx):
@@ -421,7 +429,6 @@ async def comandos_auto(ctx):
     )
 
     await ctx.send(embed=embed)
-
 
 @bot.command()
 async def comandos_colaboracion(ctx):
@@ -463,21 +470,9 @@ async def comandos_colaboracion(ctx):
 
     await ctx.send(embed=embed)
 
-@bot.command()
-async def verificar(ctx):
-    """Verifica si el usuario tiene un token válido en el web service remoto"""
-    access = get_access_token_for_user(ctx.author.id)
-    if not access:
-        await ctx.send("🔴 No estás logueado. Usa !login y sigue el link que te envía el bot.")
-        return
-
-    # verificar llamando a Spotify
-    try:
-        sp = spotipy.Spotify(auth=access)
-        user = sp.current_user()
-        await ctx.send(f"🟢 Estás logueado como **{user.get('display_name', user.get('id'))}**")
-    except Exception as e:
-        await ctx.send("🔴 Token inválido o expirado. Usa !login para renovar.")
+# +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+==+=+=+=
+# +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+= INICIO DE COMANDOS UTILES +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=
+# +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+==+=+=+=
 
 # ------------------- Comandos de reproducción -------------------
 @bot.command()
@@ -1275,7 +1270,6 @@ async def mix(ctx, *, tema):
         await ctx.send(f"❌ Error al crear mix: {str(e)}")
         print(f"Error en mix: {e}")
 
-# 5. LIMPIAR DUPLICADOS DE TODA LA BIBLIOTECA
 @bot.command()
 async def limpiar_biblioteca(ctx):
     """Encuentra y elimina canciones duplicadas de TODAS tus playlists
@@ -1339,9 +1333,8 @@ async def limpiar_biblioteca(ctx):
     except Exception as e:
         await ctx.send(f"❌ Error: {str(e)}")
     
-# ============================================
-# COMANDOS SOCIALES
-# ============================================
+    
+# -------------------------------- Comandos Sociales --------------------------------
 
 @bot.command()
 async def compatibilidad(ctx, usuario: discord.Member):
@@ -1490,9 +1483,7 @@ async def ranking_servidor(ctx):
     await ctx.send(embed=embed)
 
 
-# ============================================
-# PLAYLISTS TEMÁTICAS
-# ============================================
+# -------------------------------- Playlist Temáticas --------------------------------
 
 @bot.command()
 async def gym(ctx):
@@ -1536,7 +1527,6 @@ async def gym(ctx):
     except Exception as e:
         await ctx.send(f"❌ Error: {str(e)}")
 
-
 @bot.command()
 async def estudio(ctx):
     """Playlist para concentrarse y estudiar"""
@@ -1577,7 +1567,6 @@ async def estudio(ctx):
     except Exception as e:
         await ctx.send(f"❌ Error: {str(e)}")
 
-
 @bot.command()
 async def viaje(ctx):
     """Road trip playlist"""
@@ -1617,7 +1606,6 @@ async def viaje(ctx):
         
     except Exception as e:
         await ctx.send(f"❌ Error: {str(e)}")
-
 
 @bot.command()
 async def romantica(ctx):
@@ -1660,9 +1648,7 @@ async def romantica(ctx):
         await ctx.send(f"❌ Error: {str(e)}")
 
 
-# ============================================
-# GENERADORES AUTOMÁTICOS
-# ============================================
+# -------------------------------- Generadores Automaticos --------------------------------
 
 @bot.command()
 async def mood(ctx, emoji: str):
@@ -1728,7 +1714,6 @@ async def mood(ctx, emoji: str):
     except Exception as e:
         await ctx.send(f"❌ Error: {str(e)}")
 
-
 @bot.command()
 async def decada(ctx, año: str):
     """Música de una década específica
@@ -1783,9 +1768,7 @@ async def decada(ctx, año: str):
     except Exception as e:
         await ctx.send(f"❌ Error: {str(e)}")
 
-# ============================================
-# COMANDOS DE ESTADÍSTICAS
-# ============================================
+# ------------------------- Comandos de Estadística ----------------------------
 
 @bot.command()
 async def estadisticas(ctx):
@@ -1845,7 +1828,6 @@ async def estadisticas(ctx):
         await ctx.send(f"❌ Error: {str(e)}")
         print(f"Error en estadisticas: {e}")
 
-
 @bot.command()
 async def historial(ctx, limite: int = 10):
     """Muestra tus últimas canciones escuchadas
@@ -1885,7 +1867,6 @@ async def historial(ctx, limite: int = 10):
     except Exception as e:
         await ctx.send(f"❌ Error: {str(e)}")
         print(f"Error en historial: {e}")
-
 
 @bot.command()
 async def analizar(ctx, *, cancion):
@@ -1961,7 +1942,6 @@ async def analizar(ctx, *, cancion):
         await ctx.send(f"❌ Error: {str(e)}")
         print(f"Error en analizar: {e}")
 
-
 @bot.command()
 async def obsesion(ctx):
     """Encuentra tu canción más repetida del último mes"""
@@ -2018,17 +1998,14 @@ async def obsesion(ctx):
         await ctx.send(f"❌ Error: {str(e)}")
         print(f"Error en obsesion: {e}")
 
-# ============================================
-# PLAYLISTS COLABORATIVAS
-# ============================================
 
-# Sistema simple de playlists colaborativas usando memoria del bot
+# -------------------------------- Playlists Colaborativas --------------------------------
+
 if not hasattr(bot, 'collab_playlists'):
     bot.collab_playlists = {}
 
 if not hasattr(bot, 'playlist_suggestions'):
     bot.playlist_suggestions = {}
-
 
 @bot.command()
 async def colaborativa(ctx, *, nombre):
@@ -2064,7 +2041,6 @@ async def colaborativa(ctx, *, nombre):
         
     except Exception as e:
         await ctx.send(f"❌ Error: {str(e)}")
-
 
 @bot.command()
 async def sugerir(ctx, playlist_nombre: str, *, cancion):
@@ -2106,7 +2082,6 @@ async def sugerir(ctx, playlist_nombre: str, *, cancion):
     except Exception as e:
         await ctx.send(f"❌ Error: {str(e)}")
 
-
 @bot.command()
 async def ver_sugerencias(ctx, playlist_nombre: str):
     """Ve las sugerencias de una playlist"""
@@ -2142,7 +2117,6 @@ async def ver_sugerencias(ctx, playlist_nombre: str):
     embed.set_footer(text=f"Usa !aceptar_sugerencia {playlist_nombre} <número> para agregar")
     
     await ctx.send(embed=embed)
-
 
 @bot.command()
 async def aceptar_sugerencia(ctx, playlist_nombre: str, numero: int):
@@ -2186,7 +2160,10 @@ async def aceptar_sugerencia(ctx, playlist_nombre: str, numero: int):
     except Exception as e:
         await ctx.send(f"❌ Error: {str(e)}")
 
-# ------------------- Ejecutar -------------------
+# +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+==+=+=+=
+# +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+ EJECUTAR +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=
+# +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+==+=+=+=
+
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
         print("❌ Error: DISCORD_TOKEN no encontrado en .env")
@@ -2194,3 +2171,7 @@ if __name__ == "__main__":
     
     print("🚀 Iniciando bot...")
     bot.run(DISCORD_TOKEN)
+
+# +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+==+=+=+=
+# +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+ FIN  +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=
+# +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+==+=+=+=
