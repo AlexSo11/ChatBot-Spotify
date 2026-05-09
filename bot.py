@@ -14,17 +14,22 @@
 Desarrollo AlexWhite
 """
 
-import os 
+import os
+import re 
 import json
 import time
+import asyncio
 import random
+import ia_agent
 import discord
 import spotipy
 import requests
 from dotenv import load_dotenv
+load_dotenv(dotenv_path="./.env")
 from discord.ext import commands
 from spotipy.oauth2 import SpotifyOAuth
-
+from google import genai
+from google.genai import types
 
 # +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+==+=+=+=
 # +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=  CONFIGURACIÓN FUNCIONAL  +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=
@@ -36,6 +41,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # URL de tu web service en Render
 SPOTIFY_SERVICE_URL = os.getenv("SPOTIFY_SERVICE_URL", "https://chatbot-spotify.onrender.com")
@@ -125,6 +131,531 @@ async def on_command_error(ctx, error):
         print(f"Error en comando: {error}")
         await ctx.send(f"❌ Ocurrió un error: {str(error)}")
 
+def extraer_link_spotify(resultado_busqueda):
+    """Extrae el link de Spotify de un resultado de búsqueda"""
+    try:
+        if 'external_urls' in resultado_busqueda:
+            return resultado_busqueda['external_urls']['spotify']
+        return None
+    except:
+        return None
+    
+@bot.event
+async def on_message(message):
+    # Ignorar mensajes del propio bot
+    if message.author.bot:
+        return
+
+    # Primero procesar comandos normales (!login, !help, etc)
+    await bot.process_commands(message)
+    
+    # Si NO es un comando y el bot fue mencionado, usar IA
+    if bot.user.mentioned_in(message) and not message.content.startswith("!"):
+        user_id = message.author.id
+        nombre_usuario = message.author.name
+        
+        # Limpiamos la mención
+        texto_limpio = message.content.replace(f'<@{bot.user.id}>', '').strip()
+        
+        # Verificación de login
+        token_acceso = get_access_token_for_user(user_id)
+        sp_is_authenticated = (token_acceso is not None)
+
+        # Datos de contexto
+        context_data = {
+            'bot_name': bot.user.name,
+            'playlist_name': 'General',
+            'playlist_size': 0
+        }
+
+        # LÓGICA IA + EJECUCIÓN SPOTIFY
+        if texto_limpio:
+            async with message.channel.typing():
+                # 1. Obtener respuesta BRUTA de la IA
+                respuesta_bruta = await ia_agent.ia_responder(
+                    user_id, nombre_usuario, texto_limpio, context_data, sp_is_authenticated
+                )
+            
+            if not respuesta_bruta:
+                await message.reply("🤔 (La IA no respondió nada)")
+                return
+
+            # Patron json de la respuesta de IA
+            patron_json = r"```(?:json)?\s*(.*?)\s*```"
+            
+            match = re.search(patron_json, respuesta_bruta, re.DOTALL)
+            
+            mensaje_final = respuesta_bruta # Por defecto, todo el texto
+            
+            if match:
+                json_str = match.group(1)
+                mensaje_final = respuesta_bruta.replace(match.group(0), "").strip()
+                
+                try:
+                    comando = json.loads(json_str)
+                    accion = comando.get("accion")
+                    dato = comando.get("dato")
+                    
+                    print(f"🤖 COMANDO IA: {accion} | DATO: {dato}")
+
+                    if not sp_is_authenticated:
+                        mensaje_final += "\n🚫 *Necesitas loguearte con !login para que pueda controlar Spotify.*"
+                    
+                    else:
+                        sp = spotipy.Spotify(auth=token_acceso)
+
+                        # ═══════════════════════════════════════════════
+                        # 🎵 COMANDOS DE REPRODUCCIÓN
+                        # ═══════════════════════════════════════════════
+                        
+                        if accion == "reproducir":
+                            res = await asyncio.to_thread(sp.search, q=dato, limit=10, type='track')
+                            if res['tracks']['items']:
+                                # Lógica de mejor coincidencia
+                                items = res['tracks']['items']
+                                track_to_play = items[0]
+                                
+                                query_lower = dato.lower().strip()
+                                for item in items:
+                                    track_name = item['name'].lower()
+                                    if query_lower in track_name:
+                                        track_to_play = item
+                                        break
+                                
+                                uri = track_to_play['uri']
+                                link = extraer_link_spotify(track_to_play)
+                                
+                                try:
+                                    devices = sp.devices().get("devices", [])
+                                    if not devices:
+                                        mensaje_final += "\n⚠️ *No hay dispositivos activos. Abre Spotify en un dispositivo.*"
+                                    else:
+                                        device_id = devices[0]["id"]
+                                        for d in devices:
+                                            if d.get('is_active'):
+                                                device_id = d['id']
+                                                break
+                                        
+                                        sp.start_playback(device_id=device_id, uris=[uri])
+                                        mensaje_final += f"\n▶️ *Reproduciendo:* **{track_to_play['name']}** - {track_to_play['artists'][0]['name']}"
+                                        if link:
+                                            mensaje_final += f"\n🔗 [Abrir en Spotify]({link})"
+                                except Exception as e:
+                                    print(f"Error reproduciendo: {e}")
+                                    mensaje_final += "\n⚠️ *Error: Spotify no está activo en tus dispositivos.*"
+                            else:
+                                mensaje_final += f"\n❌ *No encontré '{dato}'.*"
+                        
+                        elif accion == "pausar":
+                            try:
+                                sp.pause_playback()
+                                mensaje_final += "\n⏸️ *Música pausada*"
+                            except:
+                                mensaje_final += "\n⚠️ No pude pausar"
+                        
+                        elif accion == "reanudar":
+                            try:
+                                sp.start_playback()
+                                mensaje_final += "\n▶️ *Música reanudada*"
+                            except:
+                                mensaje_final += "\n⚠️ *No pude reanudar*"
+                    
+                        elif accion == "saltar":
+                            sp.next_track()
+                            mensaje_final += "\n⏭️ *Siguiente canción*"
+                        
+                        elif accion == "anterior":
+                            sp.previous_track()
+                            mensaje_final += "\n⏮️ *Canción anterior*"
+                        
+                        elif accion == "cancion_actual":
+                            current = sp.current_playback()
+                            if current and current.get("item"):
+                                t = current["item"]
+                                mensaje_final += f"\n🎧 *Sonando: {t['name']} - {t['artists'][0]['name']}*"
+                            else:
+                                mensaje_final += "\n❌ *No hay nada reproduciéndose*"
+                        
+                        elif accion == "volumen":
+                            try:
+                                vol = int(dato)
+                                if 0 <= vol <= 100:
+                                    sp.volume(vol)
+                                    mensaje_final += f"\n🔊 *Volumen ajustado al {vol}%*"
+                                else:
+                                    mensaje_final += "\n⚠️ *El volumen debe estar entre 0 y 100*"
+                            except:
+                                mensaje_final += "\n⚠️ *Formato de volumen inválido*"
+
+                        # ═══════════════════════════════════════════════
+                        # 📊 COMANDOS DE ESTADÍSTICAS
+                        # ═══════════════════════════════════════════════
+                        
+                        elif accion == "estadisticas":
+                            ctx = await bot.get_context(message)
+                            comando_estadisticas = bot.get_command('estadisticas')
+                            if comando_estadisticas:
+                                await comando_estadisticas.invoke(ctx)
+                            else:
+                                mensaje_final += "\n⚠️ *Error: No encuentro el comando 'estadisticas'*"
+                        
+                        elif accion == "top_artistas":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('top_artistas')
+                            if comando:
+                                await comando.invoke(ctx)
+                        
+                        elif accion == "top_tracks":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('top_tracks')
+                            if comando:
+                                await comando.invoke(ctx)
+                        
+                        elif accion == "historial":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('historial')
+                            if comando:
+                                try:
+                                    limite = int(dato) if dato and str(dato).isdigit() else 10
+                                    # Crear argumentos simulados
+                                    mensaje_simulado = f"!historial {limite}"
+                                    message.content = mensaje_simulado
+                                    ctx = await bot.get_context(message)
+                                    await ctx.invoke(comando, limite=limite)
+                                except Exception as e:
+                                    print(f"Error en historial: {e}")
+                                    mensaje_final += f"\n⚠️ *Error mostrando historial: {str(e)}*"
+
+                        elif accion == "analizar":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('analizar')
+                            if comando:
+                                try:
+                                    await ctx.invoke(comando, cancion=dato)
+                                except Exception as e:
+                                    print(f"Error en analizar: {e}")
+                                    mensaje_final += f"\n⚠️ *Error analizando canción: {str(e)}*"
+                        
+                        elif accion == "obsesion":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('obsesion')
+                            if comando:
+                                await comando.invoke(ctx)
+
+                        # ═══════════════════════════════════════════════
+                        # 📂 COMANDOS DE PLAYLISTS
+                        # ═══════════════════════════════════════════════
+                        
+                        elif accion == "crear_playlist":
+                            user_id_sp = sp.current_user()['id']
+                            pl = sp.user_playlist_create(user_id_sp, dato, public=False)
+                            mensaje_final += f"\n✅ *Playlist '{dato}' creada*\n📁 {pl['external_urls']['spotify']}"
+                        
+                        # En bot.py -> on_message -> if match: -> if accion == "crear_mix":
+
+                        elif accion == "crear_mix":
+                            nombre_pl = dato.get("nombre_playlist", "Mix IA")
+                            canciones = dato.get("canciones", [])
+                            mensaje_final += f"\n📂 *Creando playlist '{nombre_pl}'... (esto puede tardar un poco)*"
+                            
+                            # TRUCO MAESTRO: Enviamos el mensaje de "Creando..." PRIMERO
+                            await message.channel.send(mensaje_final) 
+                            mensaje_final = "" # Limpiamos para no repetir
+
+                            try:
+                                # Ejecutamos la función pesada en segundo plano sin congelar el bot
+                                playlist_url = await asyncio.to_thread(proceso_crear_playlist_pesado, sp, nombre_pl, canciones)
+                                
+                                await message.channel.send(f"✅ *¡Lista lista! Se ha guardado en tu biblioteca.*\n🔗 **Ábrela aquí:** {playlist_url}")
+
+                            except Exception as e:
+                                print(e)
+                                await message.channel.send("❌ *Error creando la playlist.*")    
+                        
+                        elif accion == "radio":
+                            # 1. Obtenemos el comando
+                            comando = bot.get_command('radio')
+                            
+                            if comando:
+                                # 2. Obtenemos el contexto actual
+                                ctx = await bot.get_context(message)
+                                
+                                # 3. ¡CORRECCIÓN AQUÍ! 
+                                # Usamos .callback en lugar de .invoke
+                                # IMPORTANTE: Asegúrate de que tu comando 'radio' tenga un parámetro llamado 'base'
+                                await comando.callback(ctx, base=dato) 
+                                
+                            else:
+                                print("❌ El comando 'radio' no existe o no se encontró.")
+                        
+                        elif accion == "playlist_mood":
+                            # El dato que envía la IA es la categoría (ej: "fiesta", "triste")
+                            categoria = dato 
+                            
+                            # TRUCO: Modificamos el mensaje temporalmente para simular que el usuario escribió "!playlist_mood fiesta"
+                            msg_original = message.content # Guardamos copia de seguridad
+                            
+                            # Construimos el comando falso
+                            message.content = f"!playlist_mood {categoria}"
+                            
+                            # Generamos un nuevo contexto con este mensaje modificado
+                            new_ctx = await bot.get_context(message)
+                            
+                            # Invocamos el comando (ahora el argumento va dentro del mensaje, no en el invoke)
+                            await bot.invoke(new_ctx)
+                            
+                            # Restauramos el mensaje original por seguridad
+                            message.content = msg_original
+                        
+                        elif accion == "decada":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('decada')
+                            if comando:
+                                await comando.invoke(ctx, entrada=dato)
+                        
+                        elif accion == "agregar_a_playlist":
+                            partes = dato.split("|")
+                            if len(partes) == 2:
+                                nombre_pl, cancion = partes
+                                ctx = await bot.get_context(message)
+                                comando = bot.get_command('agregar_playlist')
+                                if comando:
+                                    await comando.invoke(ctx, nombre=nombre_pl, track=cancion)
+                        
+                        elif accion == "fusion":
+                            partes = dato.split("|")
+                            if len(partes) == 2:
+                                pl1, pl2 = partes
+                                ctx = await bot.get_context(message)
+                                comando = bot.get_command('fusion')
+                                if comando:
+                                    await comando.invoke(ctx, playlist1=pl1, playlist2=pl2)
+                        
+                        elif accion == "limpiar_playlist":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('limpiarplaylist')
+                            if comando:
+                                await comando.invoke(ctx, nombre=dato)
+                        
+                        elif accion == "limpiar_biblioteca":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('limpiar_biblioteca')
+                            if comando:
+                                await comando.invoke(ctx)
+
+                        # ═══════════════════════════════════════════════
+                        # 🔍 COMANDOS DE BÚSQUEDA
+                        # ═══════════════════════════════════════════════
+                        
+                        elif accion == "buscar_cancion":
+                            try:
+                                res = await asyncio.to_thread(sp.search, q=dato, limit=10, type='track')
+                                if res['tracks']['items']:
+                                    mensaje_final += f"\n\n🎵 **Resultados para:** {dato}\n"
+                                    for i, t in enumerate(res['tracks']['items'], 1):
+                                        link = extraer_link_spotify(t)
+                                        mensaje_final += f"\n{i}. **{t['name']}** - {t['artists'][0]['name']}"
+                                        if link:
+                                            mensaje_final += f"\n   🔗 [Link]({link})"
+                                else:
+                                    mensaje_final += f"\n❌ *No encontré canciones con: {dato}*"
+                            except Exception as e:
+                                print(f"Error buscando canción: {e}")
+                                mensaje_final += f"\n⚠️ *Error en búsqueda: {str(e)}*"
+
+                        elif accion == "buscar_artista":
+                            try:
+                                res = await asyncio.to_thread(sp.search, q=dato, limit=10, type='artist')
+                                if res['artists']['items']:
+                                    mensaje_final += f"\n\n🎤 **Artistas encontrados:**\n"
+                                    for i, a in enumerate(res['artists']['items'], 1):
+                                        link = extraer_link_spotify(a)
+                                        mensaje_final += f"\n{i}. **{a['name']}**"
+                                        if link:
+                                            mensaje_final += f"\n   🔗 [Link]({link})"
+                                else:
+                                    mensaje_final += f"\n❌ *No encontré artistas: {dato}*"
+                            except Exception as e:
+                                mensaje_final += f"\n⚠️ *Error: {str(e)}*"
+                        
+                        elif accion == "buscar_album":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('buscar_album')
+                            if comando:
+                                await comando.invoke(ctx, texto=dato)
+                        
+                        elif accion == "guardar":
+                            if dato == "current":
+                                current = sp.current_playback()
+                                if current and current.get("item"):
+                                    tid = current["item"]["id"]
+                                    sp.current_user_saved_tracks_add([tid])
+                                    mensaje_final += "\n💾 *Canción actual guardada*"
+                            else:
+                                res = sp.search(q=dato, type='track', limit=1)
+                                if res['tracks']['items']:
+                                    tid = res['tracks']['items'][0]['id']
+                                    sp.current_user_saved_tracks_add([tid])
+                                    mensaje_final += f"\n💾 *Guardado: {res['tracks']['items'][0]['name']}*"
+                        
+                        elif accion == "eliminar_guardada":
+                            res = sp.search(q=dato, type='track', limit=1)
+                            if res['tracks']['items']:
+                                tid = res['tracks']['items'][0]['id']
+                                sp.current_user_saved_tracks_delete([tid])
+                                mensaje_final += "\n🗑️ *Eliminado de guardadas*"
+                        
+                        elif accion == "ver_likes":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('mislikes')
+                            if comando:
+                                await comando.invoke(ctx)
+
+                        # ═══════════════════════════════════════════════
+                        # 🎙️ COMANDOS DE PODCASTS
+                        # ═══════════════════════════════════════════════
+                        
+                        elif accion == "podcast_tendencias":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('podcast_tendencias')
+                            if comando:
+                                await comando.invoke(ctx)
+                        
+                        elif accion == "podcast_episodios":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('podcast_episodios')
+                            if comando:
+                                await comando.invoke(ctx, show=dato)
+
+                        # ═══════════════════════════════════════════════
+                        # 🎨 COMANDOS TEMÁTICOS
+                        # ═══════════════════════════════════════════════
+                        
+                        elif accion == "playlist_gym":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('gym')
+                            if comando:
+                                await comando.invoke(ctx)
+                        
+                        elif accion == "playlist_estudio":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('estudio')
+                            if comando:
+                                await comando.invoke(ctx)
+                        
+                        elif accion == "playlist_viaje":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('viaje')
+                            if comando:
+                                await comando.invoke(ctx)
+                        
+                        elif accion == "playlist_romantica":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('romantica')
+                            if comando:
+                                await comando.invoke(ctx)
+
+                        # ═══════════════════════════════════════════════
+                        # 🤝 COMANDOS SOCIALES
+                        # ═══════════════════════════════════════════════
+                        
+                        # En bot.py -> on_message -> if match: ...
+
+                        elif accion == "compatibilidad":
+                            # El 'dato' que envía la IA es el usuario a comparar (ej: "@Alex")
+                            usuario_objetivo = dato 
+                            
+                            # 1. Guardamos el mensaje original por seguridad
+                            msg_original = message.content 
+                            
+                            # 2. Reescribimos el mensaje para simular el comando
+                            # Asegúrate de que tu comando en el bot se llame realmente '!compatibilidad' o '!ship'
+                            message.content = f"!compatibilidad {usuario_objetivo}"
+                            
+                            # 3. Creamos un nuevo contexto con este mensaje "falso"
+                            new_ctx = await bot.get_context(message)
+                            
+                            # 4. Ejecutamos el comando (ahora sí funcionará porque el argumento está en el texto)
+                            await bot.invoke(new_ctx)
+                            
+                            # 5. Restauramos el mensaje original
+                            message.content = msg_original
+                        
+                        elif accion == "crear_colaborativa":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('colaborativa')
+                            if comando:
+                                await comando.invoke(ctx, nombre=dato)
+                        
+                        elif accion == "sugerir_cancion":
+                            partes = dato.split("|")
+                            if len(partes) == 2:
+                                pl_nombre, cancion = partes
+                                ctx = await bot.get_context(message)
+                                comando = bot.get_command('sugerir')
+                                if comando:
+                                    await comando.invoke(ctx, playlist_nombre=pl_nombre, cancion=cancion)
+                        
+                        elif accion == "ver_sugerencias":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('ver_sugerencias')
+                            if comando:
+                                await comando.invoke(ctx, playlist_nombre=dato)
+
+                        # ═══════════════════════════════════════════════
+                        # 🎯 COMANDOS DE DESCUBRIMIENTO
+                        # ═══════════════════════════════════════════════
+                        
+                        elif accion == "descubre":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('descubre')
+                            if comando:
+                                await comando.invoke(ctx)
+                        
+                        elif accion == "recomendar_artista":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('recomienda_artista')
+                            if comando:
+                                await comando.invoke(ctx)
+                        
+                        elif accion == "recomendar_canciones":
+                            ctx = await bot.get_context(message)
+                            comando = bot.get_command('recomienda_canciones')
+                            if comando:
+                                await comando.invoke(ctx)
+                        
+                        else:
+                            mensaje_final += f"\n⚠️ *Comando '{accion}' no implementado aún*"
+
+                except Exception as e:
+                    print(f"❌ Error ejecutando comando IA: {e}")
+                    import traceback
+                    traceback.print_exc()  # Imprimir stack trace completo
+                    mensaje_final += f"\n⚠️ *Error procesando '{accion}': {str(e)}*"
+
+        # Enviar respuesta final (CORREGIDO)
+        try:
+            # 1. VERIFICACIÓN DE SEGURIDAD (Esto es lo nuevo)
+            # Solo intentamos enviar si hay texto real (quitando espacios vacíos)
+            if mensaje_final and mensaje_final.strip():
+                
+                if len(mensaje_final) > 2000:
+                    # Si es muy largo, lo partimos en trozos
+                    chunks = [mensaje_final[i:i+1900] for i in range(0, len(mensaje_final), 1900)]
+                    for chunk in chunks:
+                        await message.reply(chunk)
+                else:
+                    # Si tiene tamaño normal, lo enviamos
+                    await message.reply(mensaje_final)
+                    
+            # Si está vacío, simplemente no hace nada (y no da error)
+
+        except Exception as e:
+            print(f"Error enviando mensaje: {e}")
+            # Opcional: solo avisar si fue un error real y no un mensaje vacío
+            if "Cannot send an empty message" not in str(e):
+                await message.reply("Lo siento, hubo un problema enviando la respuesta.")
+
 # ------------------- Comandos Básicos -------------------
 
 @bot.command()
@@ -179,7 +710,7 @@ async def verificar(ctx):
 # ------------------- Eventos y comandos -------------------
 
 @bot.event
-async def on_ready():
+async def listo():
     print(f"Bot listo como {bot.user}")
 
 # +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=
@@ -265,7 +796,7 @@ async def comandos_playlists(ctx):
             "`!fusion <playlist1> <playlist2>` - Fusionar playlists\n"
             "`!limpiarplaylist <nombre>` - Quitar duplicados\n"
             "`!limpiar_biblioteca` - Limpiar todas las playlists\n"
-            "`!duplicados` - Ver duplicados en biblioteca"
+            #"`!duplicados` - Ver duplicados en biblioteca"
         ),
         inline=False
     )
@@ -329,8 +860,8 @@ async def comandos_stats(ctx):
         name="🔬 Análisis de Audio", 
         value=(
             "`!analizar <canción>` - BPM, energía, positividad\n"
-            "`!energia` - Playlist de alta energía\n"
-            "`!relajante` - Playlist tranquila"
+            #"`!energia` - Playlist de alta energía\n"
+            #"`!relajante` - Playlist tranquila"
         ),
         inline=False
     )
@@ -345,9 +876,9 @@ async def comandos_social(ctx):
         name="🤝 Comparaciones", 
         value=(
             "`!compatibilidad @usuario` - % de gustos similares\n"
-            "`!vs @usuario` - Comparar perfiles musicales\n"
-            "`!batalla <artista1> vs <artista2>` - Votar\n"
-            "`!ranking_servidor` - Top del servidor"
+            #"`!vs @usuario` - Comparar perfiles musicales\n"
+            #"`!batalla <artista1> vs <artista2>` - Votar\n"
+            #"`!ranking_servidor` - Top del servidor"
         ),
         inline=False
     )
@@ -373,8 +904,8 @@ async def comandos_tematicas(ctx):
         value=(
             "`!gym` - Para entrenar\n"
             "`!estudio` - Para concentrarse\n"
-            "`!cocinar` - Música para cocinar\n"
-            "`!dormir` - Para dormir\n"
+            #"`!cocinar` - Música para cocinar\n"
+            #"`!dormir` - Para dormir\n"
             "`!viaje` - Road trip playlist"
         ),
         inline=False
@@ -384,9 +915,9 @@ async def comandos_tematicas(ctx):
         name="💝 Ocasiones", 
         value=(
             "`!romantica` - Canciones románticas\n"
-            "`!fiesta` - Para fiestas\n"
-            "`!cumpleanos` - Celebración\n"
-            "`!navidad` - Música navideña (temporada)"
+            #"`!fiesta` - Para fiestas\n"
+            #"`!cumpleanos` - Celebración\n"
+            #"`!navidad` - Música navideña (temporada)"
         ),
         inline=False
     )
@@ -409,10 +940,10 @@ async def comandos_auto(ctx):
     embed.add_field(
         name="🌍 Contextuales", 
         value=(
-            "`!playlist_clima` - Según el clima actual\n"
-            "`!playlist_hora` - Según la hora del día\n"
+            #"`!playlist_clima` - Según el clima actual\n"
+            #"`!playlist_hora` - Según la hora del día\n"
             "`!decada <año>` - Música de los 80s, 90s, etc.\n"
-            "`!retro` - Clásicos aleatorios"
+            #"`!retro` - Clásicos aleatorios"
         ),
         inline=False
     )
@@ -421,7 +952,7 @@ async def comandos_auto(ctx):
         name="🎯 Personalizadas", 
         value=(
             "`!descubre` - Recomendaciones personalizadas\n"
-            "`!explorar` - Géneros nuevos para ti\n"
+            #"`!explorar` - Géneros nuevos para ti\n"
             "`!recomienda_artista` - Artista aleatorio\n"
             "`!recomienda_canciones` - Por género aleatorio"
         ),
@@ -438,10 +969,10 @@ async def comandos_colaboracion(ctx):
         name="👥 Crear y Compartir", 
         value=(
             "`!colaborativa <nombre>` - Crear playlist colaborativa\n"
-            "`!invitar @usuario <playlist>` - Invitar a editar\n"
-            "`!publicas` - Ver tus playlists públicas\n"
-            "`!hacer_publica <playlist>` - Hacer pública\n"
-            "`!hacer_privada <playlist>` - Hacer privada"
+            #"`!invitar @usuario <playlist>` - Invitar a editar\n"
+            #"`!publicas` - Ver tus playlists públicas\n"
+            #"`!hacer_publica <playlist>` - Hacer pública\n"
+            #"`!hacer_privada <playlist>` - Hacer privada"
         ),
         inline=False
     )
@@ -451,13 +982,13 @@ async def comandos_colaboracion(ctx):
         value=(
             "`!sugerir <playlist> <canción>` - Sugerir canción\n"
             "`!ver_sugerencias <playlist>` - Ver sugerencias\n"
-            "`!aceptar_sugerencia <playlist> <#>` - Aceptar\n"
-            "`!rechazar_sugerencia <playlist> <#>` - Rechazar"
+            #"`!aceptar_sugerencia <playlist> <#>` - Aceptar\n"
+            #"`!rechazar_sugerencia <playlist> <#>` - Rechazar"
         ),
         inline=False
     )
     
-    embed.add_field(
+    """embed.add_field(
         name="🎵 Sesiones Grupales", 
         value=(
             "`!sesion_grupal <nombre>` - Crear sesión\n"
@@ -466,7 +997,7 @@ async def comandos_colaboracion(ctx):
             "`!cola_grupal` - Ver cola de votación"
         ),
         inline=False
-    )
+    )"""
 
     await ctx.send(embed=embed)
 
@@ -486,19 +1017,45 @@ async def play(ctx, *, query):
         await ctx.send("🔴 No estás logueado. Usa !login para conectar tu cuenta de Spotify.")
         return
 
-    results = sp.search(q=query, limit=1, type="track")
+    # 1. CAMBIO IMPORTANTE: Pedimos 10 resultados, no solo 1
+    results = sp.search(q=query, limit=10, type="track")
+    
     if not results["tracks"]["items"]:
         await ctx.send("❌ No encontré la canción.")
         return
-    track = results["tracks"]["items"][0]
+
+    items = results["tracks"]["items"]
+    track_to_play = items[0] # Por defecto, la primera opción (fallback)
+
+    # 2. LÓGICA DE MEJOR COINCIDENCIA
+    # Buscamos si alguna de las 10 canciones tiene el nombre EXACTO o MUY PARECIDO a lo que escribiste
+    query_lower = query.lower().strip()
+    
+    for item in items:
+        track_name = item['name'].lower()
+        # Si el nombre de la canción contiene lo que escribiste (prioridad al nombre sobre la popularidad)
+        if query_lower in track_name:
+            track_to_play = item
+            break # Encontramos una coincidencia de nombre, nos quedamos con esta
 
     devices = sp.devices().get("devices", [])
     if not devices:
         await ctx.send("⚠️ No hay dispositivos activos. Abre Spotify en un dispositivo y reintenta.")
         return
+    
+    # Usar el dispositivo activo actual o el primero de la lista
+    # Intentamos buscar uno que esté activo (is_active=True)
     device_id = devices[0]["id"]
-    sp.start_playback(device_id=device_id, uris=[track["uri"]])
-    await ctx.send(f"▶️ Reproduciendo **{track['name']}** — {track['artists'][0]['name']}")
+    for d in devices:
+        if d['is_active']:
+            device_id = d['id']
+            break
+
+    try:
+        sp.start_playback(device_id=device_id, uris=[track_to_play["uri"]])
+        await ctx.send(f"▶️ Reproduciendo **{track_to_play['name']}** — {track_to_play['artists'][0]['name']}")
+    except Exception as e:
+        await ctx.send(f"❌ Error al reproducir: {e}")
 
 
 @bot.command()
@@ -592,19 +1149,83 @@ async def volume(ctx, level: int):
 # ------------------- Playlists y recomendaciones -------------------
 @bot.command()
 async def playlist(ctx, *, mood):
+    """
+    Crea una playlist contextual basada en una búsqueda.
+    Ejemplo: !playlist rock de los 80
+    Ejemplo: !playlist musica para programar
+    """
     sp = make_spotify_client_for_user(ctx.author.id)
     if not sp:
         await ctx.send("🔴 No estás logueado. Usa !login.")
         return
-    results = sp.search(q=mood, type="track", limit=30)
-    tracks = [t["uri"] for t in results["tracks"]["items"]]
-    if not tracks:
-        await ctx.send("❌ No encontré canciones para ese mood.")
+
+    await ctx.send(f"🔍 Buscando el mejor contexto para: **{mood}**...")
+
+    # 1. BÚSQUEDA INTELIGENTE: Buscamos PLAYLISTS, no canciones sueltas.
+    # Esto garantiza que las canciones tengan el "contexto" del género o mood.
+    results = sp.search(q=mood, type="playlist", limit=10)
+    
+    if not results["playlists"]["items"]:
+        await ctx.send("❌ No encontré playlists relacionadas con ese contexto.")
         return
-    user = sp.current_user()["id"]
-    pl = sp.user_playlist_create(user, f"Playlist: {mood}", public=False)
-    sp.playlist_add_items(pl["id"], tracks[:50])
-    await ctx.send(f"✅ Playlist creada: {pl['external_urls']['spotify']}")
+
+    collected_tracks = set() # Usamos un Set para evitar duplicados automáticamente
+    target_count = 40 # Queremos una playlist de 40 canciones aprox
+
+    # 2. MINERÍA DE CANCIONES (El toque "Ad Hoc")
+    # Recorremos las playlists encontradas y sacamos canciones de ellas
+    playlists_found = results["playlists"]["items"]
+    
+    # Barajamos las playlists encontradas para no sacar siempre de la primera
+    random.shuffle(playlists_found)
+
+    for pl_info in playlists_found:
+        if len(collected_tracks) >= target_count:
+            break
+            
+        try:
+            # Sacamos las primeras 15 canciones de cada playlist encontrada
+            tracks_in_pl = sp.playlist_tracks(pl_info["id"], limit=15)
+            
+            for item in tracks_in_pl["items"]:
+                # Verificamos que el item tenga datos válidos
+                if item.get("track") and item["track"].get("uri"):
+                    uri = item["track"]["uri"]
+                    collected_tracks.add(uri)
+        except:
+            continue # Si una playlist falla, pasamos a la siguiente
+
+    if not collected_tracks:
+        await ctx.send("❌ Encontré el estilo, pero no pude extraer canciones válidas.")
+        return
+
+    # Convertimos a lista y mezclamos para que sea una experiencia nueva
+    final_track_list = list(collected_tracks)
+    random.shuffle(final_track_list)
+    
+    # Recortamos al límite deseado
+    final_track_list = final_track_list[:target_count]
+
+    # 3. CREACIÓN
+    try:
+        user = sp.current_user()["id"]
+        # Nombre más descriptivo
+        pl_name = f"{mood.title()} Mix (Bot)"
+        
+        pl = sp.user_playlist_create(
+            user, 
+            pl_name, 
+            public=False, 
+            description=f"Playlist generada ad-hoc basada en '{mood}'."
+        )
+        
+        # Añadimos las canciones
+        sp.playlist_add_items(pl["id"], final_track_list)
+        
+        await ctx.send(f"✅ **Playlist Ad-Hoc creada:** {pl_name}\n🔗 {pl['external_urls']['spotify']}\n🎵 {len(final_track_list)} canciones seleccionadas de varias fuentes.")
+    
+    except Exception as e:
+        await ctx.send(f"❌ Error al guardar la playlist: {e}")
 
 
 @bot.command()
@@ -1651,122 +2272,229 @@ async def romantica(ctx):
 # -------------------------------- Generadores Automaticos --------------------------------
 
 @bot.command()
-async def mood(ctx, emoji: str):
-    """Crea playlist según emoji
-    Uso: !mood 😊  o  !mood 😢  o  !mood 🔥
+async def mood(ctx, *, categoria: str):
+    """Crea playlist según una palabra clave (mood)
+    Uso: !mood feliz  o  !mood fiesta  o  !mood gym
     """
     sp = make_spotify_client_for_user(ctx.author.id)
     if not sp:
-        await ctx.send("🔴 No estás logueado. Usa !login.")
+        await ctx.send("🔴 No estás logueado. Usa !login para conectar tu cuenta.")
         return
     
+    # Normalizamos el texto (todo a minúsculas y sin espacios extra)
+    mood_input = categoria.lower().strip()
+    
+    # Diccionario: Palabra Clave -> (Nombre para Playlist, Término de búsqueda en Spotify)
+    # He agregado sinónimos para que sea flexible
     mood_map = {
-        '😊': ('happy', 'feliz alegre positivo'),
-        '😢': ('sad', 'triste melancólico'),
-        '😡': ('angry', 'rock metal intenso'),
-        '🔥': ('fire', 'reggaeton trap urbano'),
-        '💤': ('sleep', 'chill relajante dormir'),
-        '💪': ('workout', 'gym motivación energético'),
-        '❤️': ('love', 'romántico amor'),
-        '🎉': ('party', 'fiesta dance'),
-        '☕': ('coffee', 'café mañana acústico'),
-        '🌙': ('night', 'noche nocturno'),
-        '🏖️': ('beach', 'playa summer verano'),
-        '🎮': ('gaming', 'videojuegos epic'),
+        # Felicidad
+        'feliz':    ('Feliz', 'happy hits good vibes pop'),
+        'alegre':   ('Feliz', 'happy hits good vibes pop'),
+        'happy':    ('Feliz', 'happy hits good vibes pop'),
+        
+        # Tristeza
+        'triste':   ('Sad', 'sad songs piano melancolia'),
+        'sad':      ('Sad', 'sad songs piano melancolia'),
+        'depre':    ('Sad', 'sad songs piano melancolia'),
+        'llorar':   ('Sad', 'crying songs sad ballads'),
+
+        # Energía / Gym
+        'gym':      ('Gym', 'gym workout motivation phonk'),
+        'entrenar': ('Gym', 'gym workout motivation phonk'),
+        'power':    ('Power', 'gym workout motivation rock'),
+        'workout':  ('Gym', 'gym workout motivation phonk'),
+
+        # Fiesta
+        'fiesta':   ('Fiesta', 'party hits reggaeton perreo club'),
+        'party':    ('Fiesta', 'party hits reggaeton perreo club'),
+        'reggaeton':('Reggaeton', 'reggaeton mix urbano'),
+
+        # Relax / Dormir
+        'relax':    ('Relax', 'chill lo-fi acoustic'),
+        'chill':    ('Relax', 'chill lo-fi acoustic'),
+        'dormir':   ('Sleep', 'sleep calm ambient piano'),
+        'estudiar': ('Focus', 'study lofi focus beats'),
+
+        # Amor
+        'amor':     ('Amor', 'love songs romantic ballads'),
+        'romantico':('Amor', 'love songs romantic ballads'),
+        'sexo':     ('Intenso', 'sexy hits r&b slow'), # Opcional jaja
+
+        # Géneros específicos como mood
+        'rock':     ('Rock', 'rock classics metal hits'),
+        'metal':    ('Metal', 'metalcore heavy metal'),
+        'pop':      ('Pop', 'pop hits current charts'),
     }
     
-    if emoji not in mood_map:
-        emojis_disponibles = ' '.join(mood_map.keys())
-        await ctx.send(f"❌ Emoji no reconocido.\n💡 Disponibles: {emojis_disponibles}")
+    # Verificación
+    if mood_input not in mood_map:
+        # Mostramos algunas opciones disponibles
+        opciones = "feliz, triste, fiesta, gym, relax, dormir, amor, rock"
+        await ctx.send(f"❌ No reconozco el mood: '{mood_input}'.\n💡 Intenta con: {opciones}")
         return
     
-    genre, search_term = mood_map[emoji]
+    # Extraemos los datos del diccionario
+    playlist_name_suffix, search_term = mood_map[mood_input]
     
-    await ctx.send(f"🎨 Creando playlist {emoji}...")
+    await ctx.send(f"🎨 Buscando canciones para mood: **{playlist_name_suffix}**...")
     
     try:
         all_tracks = []
+        # Buscamos playlists públicas que coincidan con el término
         playlists = sp.search(q=search_term, type='playlist', limit=5)
         
+        # Recolectamos canciones de esas playlists
         for playlist in playlists['playlists']['items']:
             if len(all_tracks) >= 30:
                 break
             
-            tracks = sp.playlist_tracks(playlist['id'], limit=10)
-            for item in tracks['items']:
-                if len(all_tracks) >= 30:
-                    break
-                if item.get('track') and item['track'].get('uri'):
-                    uri = item['track']['uri']
-                    if uri not in all_tracks:
-                        all_tracks.append(uri)
+            try:
+                tracks = sp.playlist_tracks(playlist['id'], limit=10)
+                for item in tracks['items']:
+                    if len(all_tracks) >= 30:
+                        break
+                    
+                    # Verificación extra para evitar errores de datos nulos
+                    if item.get('track') and item['track'].get('uri'):
+                        uri = item['track']['uri']
+                        # Evitar duplicados
+                        if uri not in all_tracks:
+                            all_tracks.append(uri)
+            except:
+                continue # Si una playlist falla, pasamos a la siguiente
         
         if len(all_tracks) == 0:
-            await ctx.send(f"❌ No pude crear playlist para {emoji}")
+            await ctx.send(f"❌ No encontré canciones suficientes para '{mood_input}'")
             return
         
-        user = sp.current_user()['id']
-        pl = sp.user_playlist_create(user, f'Mood {emoji}', public=False)
+        # Crear la playlist en la cuenta del usuario
+        user_id = sp.current_user()['id']
+        final_playlist_name = f"Mood {playlist_name_suffix} (Bot)"
+        
+        pl = sp.user_playlist_create(user_id, final_playlist_name, public=False, description=f"Creada por el bot para el mood: {mood_input}")
+        
+        # Agregar canciones en lotes (Spotify a veces falla si mandas muchas de golpe, pero 30 está bien)
         sp.playlist_add_items(pl['id'], all_tracks)
         
-        await ctx.send(f"{emoji} **Playlist creada:** {pl['external_urls']['spotify']}\n🎵 {len(all_tracks)} canciones")
+        await ctx.send(f"✅ **Playlist Creada:** {final_playlist_name}\n🔗 {pl['external_urls']['spotify']}\n🎵 {len(all_tracks)} canciones añadidas.")
         
     except Exception as e:
-        await ctx.send(f"❌ Error: {str(e)}")
+        print(f"Error en mood: {e}")
+        await ctx.send("❌ Ocurrió un error al crear la playlist. Revisa la consola o intenta de nuevo.")
 
 @bot.command()
-async def decada(ctx, año: str):
-    """Música de una década específica
-    Uso: !decada 80  o  !decada 90s  o  !decada 2000
+async def decada(ctx, entrada: str):
+    """
+    Genera una playlist de una década específica.
+    Uso: !decada 80 | !decada 90s | !decada 2000 | !decada 10
     """
     sp = make_spotify_client_for_user(ctx.author.id)
     if not sp:
         await ctx.send("🔴 No estás logueado. Usa !login.")
         return
     
-    # Limpiar input
-    año = año.replace('s', '').replace("'", '')
+    # 1. LIMPIEZA Y LÓGICA DE AÑO INTELIGENTE
+    raw_year = entrada.lower().replace('s', '').replace("'", '').strip()
     
-    if not año.isdigit():
-        await ctx.send("❌ Formato incorrecto. Usa: !decada 80, !decada 90, !decada 2000")
+    if not raw_year.isdigit():
+        await ctx.send("❌ Formato incorrecto. Intenta: `!decada 80`, `!decada 90`, `!decada 2000`")
         return
     
-    await ctx.send(f"📻 Buscando música de los {año}s...")
+    val = int(raw_year)
+    full_year = 0
+    
+    # Lógica para convertir "80" -> 1980 y "10" -> 2010
+    if val < 100:
+        if val >= 50: # Asumimos 1950-1999
+            full_year = 1900 + val
+        else:         # Asumimos 2000-2049
+            full_year = 2000 + val
+    else:
+        full_year = val
+
+    # Validación básica (no viajar al futuro lejano o pasado muy lejano)
+    if full_year < 1950 or full_year > 2029:
+        await ctx.send(f"⚠️ Solo tengo buena data musical entre 1950 y 2029. (Tú pediste {full_year})")
+        return
+
+    decade_str = f"{full_year}s" # Ej: "1980s"
+    await ctx.send(f"🕰️ Encendiendo la máquina del tiempo: Destino **{decade_str}**...")
     
     try:
-        queries = [f"{año}s hits", f"{año}s music", f"best of {año}s"]
-        all_tracks = []
+        # 2. BÚSQUEDA DIVERSIFICADA
+        # Buscamos varias frases para no obtener siempre la misma playlist "Top 50"
+        queries = [
+            f"Best of {decade_str}",
+            f"{decade_str} smash hits",
+            f"{decade_str} pop rock",
+            f"Top hits {decade_str}"
+        ]
         
+        collected_uris = set()
+        target_count = 40
+        
+        # Barajamos las búsquedas para variar el orden de prioridad
+        random.shuffle(queries)
+
         for query in queries:
-            if len(all_tracks) >= 30:
+            if len(collected_uris) >= target_count + 10: # Buscamos un poco de sobra
                 break
+                
+            # Buscamos playlists
+            results = sp.search(q=query, type='playlist', limit=4)
+            playlists_items = results['playlists']['items']
+            random.shuffle(playlists_items) # Mezclar playlists encontradas
             
-            playlists = sp.search(q=query, type='playlist', limit=3)
-            
-            for playlist in playlists['playlists']['items']:
-                if len(all_tracks) >= 30:
+            for pl in playlists_items:
+                if len(collected_uris) >= target_count + 10:
                     break
                 
-                tracks = sp.playlist_tracks(playlist['id'], limit=15)
-                for item in tracks['items']:
-                    if len(all_tracks) >= 30:
-                        break
-                    if item.get('track') and item['track'].get('uri'):
-                        if item['track']['uri'] not in all_tracks:
-                            all_tracks.append(item['track']['uri'])
-        
-        if not all_tracks:
-            await ctx.send(f"❌ No encontré música de los {año}s")
+                try:
+                    # Extraer canciones (limitado a 15 por playlist para tener variedad)
+                    tracks = sp.playlist_tracks(pl['id'], limit=15)
+                    for item in tracks['items']:
+                        track = item.get('track')
+                        if track and track.get('uri'):
+                            # Validación opcional: Verificar fecha de lanzamiento (si está disponible)
+                            # Esto asegura que no se cuelen canciones nuevas en playlists viejas
+                            release_date = track.get('album', {}).get('release_date', '0000')
+                            if release_date.startswith(str(full_year)[:3]): # Chequeo rápido de década (ej: 198)
+                                collected_uris.add(track['uri'])
+                            else:
+                                # Si no coincide la fecha exacta, lo agregamos igual con probabilidad 
+                                # (porque a veces las playlists tienen remasters con fecha nueva)
+                                if random.random() > 0.3: 
+                                    collected_uris.add(track['uri'])
+
+                except:
+                    continue
+
+        if not collected_uris:
+            await ctx.send(f"❌ No pude recopilar suficientes canciones de los {decade_str}.")
             return
+
+        # 3. MEZCLA FINAL Y CREACIÓN
+        final_track_list = list(collected_uris)
+        random.shuffle(final_track_list)
+        final_track_list = final_track_list[:target_count]
         
-        user = sp.current_user()['id']
-        pl = sp.user_playlist_create(user, f"🕰️ Los {año}s", public=False)
-        sp.playlist_add_items(pl['id'], all_tracks)
+        user_id = sp.current_user()['id']
+        playlist_title = f"Flashback: {decade_str} (Bot)"
         
-        await ctx.send(f"📻 **Playlist de los {año}s creada:** {pl['external_urls']['spotify']}\n🎵 {len(all_tracks)} clásicos")
+        pl = sp.user_playlist_create(
+            user_id, 
+            playlist_title, 
+            public=False,
+            description=f"Viaje musical a los {decade_str}. Generado por tu Bot de Discord."
+        )
+        
+        sp.playlist_add_items(pl['id'], final_track_list)
+        
+        await ctx.send(f"📼 **¡Cinta lista!**\n📂 Playlist: **{playlist_title}**\n🔗 {pl['external_urls']['spotify']}\n🎵 {len(final_track_list)} canciones cargadas.")
         
     except Exception as e:
-        await ctx.send(f"❌ Error: {str(e)}")
+        print(f"Error en decada: {e}")
+        await ctx.send("❌ Ocurrió un error en la máquina del tiempo.")
 
 # ------------------------- Comandos de Estadística ----------------------------
 
@@ -2159,6 +2887,22 @@ async def aceptar_sugerencia(ctx, playlist_nombre: str, numero: int):
         
     except Exception as e:
         await ctx.send(f"❌ Error: {str(e)}")
+
+def proceso_crear_playlist_pesado(sp, nombre_pl, canciones):
+    # Esta función contiene todo el código BLOQUEANTE de Spotify
+    user_sp = sp.current_user()['id']
+    pl = sp.user_playlist_create(user_sp, name=nombre_pl, public=True)
+    uris = []
+    for c in canciones:
+        # Búsqueda síncrona (está bien porque estamos en otro hilo)
+        r = sp.search(q=c, limit=1)
+        if r['tracks']['items']:
+            uris.append(r['tracks']['items'][0]['uri'])
+    
+    if uris:
+        sp.playlist_add_items(pl['id'], uris)
+    
+    return pl['external_urls']['spotify']
 
 # +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+==+=+=+=
 # +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+ EJECUTAR +=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=
