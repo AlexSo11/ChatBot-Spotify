@@ -14,3 +14,5 @@ venv/
 .bash_history
 .cache/
 .local/
+.python-version
+runtime.txt
