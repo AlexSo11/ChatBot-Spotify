@@ -2,6 +2,9 @@
 *.pyc
 __pycache__/
 
+# JSON
+.json
+
 # Entornos virtuales
 venv/
 .env
