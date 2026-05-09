@@ -11,7 +11,7 @@
 ⠀⠀⠀⢻⣿⣿⠉⠉⢹⣿⣿⠁⠀⠀⠀⠀
 ⠀⠀⠀⠀⠉⠁⠀⠀⠀⠉⠁
 
-Desarrollo AlexWhite
+Desarrollo AlexWhite USER GIT AlexSo11
 """
 
 import os
