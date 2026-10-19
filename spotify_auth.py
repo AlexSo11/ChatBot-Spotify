@@ -1,5 +1,11 @@
+"""Microservicio de autenticación de Spotify (Flask).
+
+Gestiona el flujo OAuth de Spotify y persiste los tokens por usuario de Discord
+en PostgreSQL. El bot (`config.get_access_token_for_user`) consume el endpoint
+`/get_token`; el usuario inicia el flujo desde `/login`.
+
+Desplegado aparte del bot (p. ej. en Render)."""
 import os
-import json
 import time
 from flask import Flask, request, redirect, jsonify
 from spotipy.oauth2 import SpotifyOAuth

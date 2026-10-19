@@ -1,8 +1,17 @@
+"""Agente IA del bot (Google Gemini).
+
+Envía el mensaje del usuario a Gemini y devuelve el texto crudo que luego
+`events.on_message` interpreta para ejecutar el comando de Spotify adecuado.
+Incluye una memoria ligera por usuario persistida en `user_memory.json`.
+"""
+
 import os
 import re
 import json
 import asyncio
+
 from dotenv import load_dotenv
+
 load_dotenv(dotenv_path="./.env")
 
 from google import genai
@@ -27,90 +36,8 @@ if not GEMINI_API_KEY:
 # ===========================
 MEMORY_FILE = "user_memory.json"
 
-def _cargar_memoria():
-    if not os.path.exists(MEMORY_FILE):
-        return {}
-    try:
-        with open(MEMORY_FILE, "r", encoding="utf8") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def _guardar_memoria(memoria):
-    with open(MEMORY_FILE, "w", encoding="utf8") as f:
-        json.dump(memoria, f, indent=4, ensure_ascii=False)
-
-memoria_usuarios = _cargar_memoria()
-
-def _actualizar_memoria(user_id, texto_usuario, respuesta_ia):
-    """Guarda gustos, artistas mencionados y conversación reciente."""
-    
-    if user_id not in memoria_usuarios:
-        memoria_usuarios[user_id] = {
-            "gustos": [],
-            "artistas": [],
-            "generos": [],
-            "estado": "",
-            "historial": []
-        }
-
-    data = memoria_usuarios[user_id]
-
-    # Guardar historial breve (últimos 10 mensajes)
-    data["historial"].append({"user": texto_usuario, "ia": respuesta_ia})
-    data["historial"] = data["historial"][-10:]
-
-    # Detectar artistas capitalizados
-    artistas = re.findall(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b", texto_usuario)
-    for a in artistas:
-        if a.lower() not in [x.lower() for x in data["artistas"]] and len(a) > 3:
-            data["artistas"].append(a)
-            data["artistas"] = data["artistas"][-20:]  # Máximo 20 artistas
-
-    # Detectar géneros musicales
-    generos_comunes = ["rock", "pop", "jazz", "metal", "rap", "reggaeton", "edm", "indie", "country", "blues", "alternative"]
-    lower = texto_usuario.lower()
-    for genero in generos_comunes:
-        if genero in lower and genero not in data["generos"]:
-            data["generos"].append(genero)
-
-    # Detectar estados emocionales o actividades
-    if "estudi" in lower or "concentr" in lower:
-        data["estado"] = "estudiando"
-    elif "relax" in lower or "chill" in lower:
-        data["estado"] = "relax"
-    elif "fiesta" in lower or "party" in lower:
-        data["estado"] = "fiesta"
-    elif "triste" in lower or "sad" in lower:
-        data["estado"] = "triste"
-    elif "gym" in lower or "entrenar" in lower:
-        data["estado"] = "gym"
-
-    _guardar_memoria(memoria_usuarios)
-
-def _recuperar_contexto(user_id):
-    """Genera un resumen del perfil del usuario para la IA."""
-    if user_id not in memoria_usuarios:
-        return "(Usuario nuevo - sin historial previo)"
-
-    data = memoria_usuarios[user_id]
-
-    contexto = f"""
-📊 PERFIL DEL USUARIO:
-- Géneros favoritos: {', '.join(data['generos']) if data['generos'] else 'No detectados aún'}
-- Artistas mencionados: {', '.join(data['artistas'][-10:]) if data['artistas'] else 'Ninguno'}
-- Estado actual: {data['estado'] or 'desconocido'}
-- Conversaciones recientes: {len(data['historial'])} mensajes guardados
-"""
-    
-    # Agregar últimas 3 interacciones para contexto
-    if data["historial"]:
-        contexto += "\n🔄 ÚLTIMAS INTERACCIONES:\n"
-        for h in data["historial"][-3:]:
-            contexto += f"  👤 Usuario: {h['user'][:100]}...\n"
-            contexto += f"  🤖 IA: {h['ia'][:100]}...\n"
-
-    return contexto
+# NOTE: las funciones de memoria (`_cargar_memoria`, `_actualizar_memoria`, etc.)
+# están definidas más abajo, tras `ia_responder`.
 
 # RESPONDER DE LA IA - CON TODOS LOS COMANDOS
 async def ia_responder(user_id, nombre_usuario, texto_usuario, context_data, sp_is_authenticated):
@@ -742,35 +669,8 @@ Respuesta:
         return None
 
 # ===========================
-# DETECTAR COMANDOS (SIN CAMBIOS)
+# MEMORIA DE USUARIO
 # ===========================
-def _extraer_comando(respuesta: str):
-    """
-    Detecta comandos como:
-    !play algo
-    !pause
-    !playlist chill
-    """
-
-    # Comando al inicio
-    m = re.match(r"^!(\w+)(.*)$", respuesta.strip())
-    if m:
-        return respuesta.strip()
-
-    # Comando incrustado dentro del texto
-    inline = re.search(r"!(play|pause|playlist|skip|add)\s+[^\n]+", respuesta, re.IGNORECASE)
-    if inline:
-        return inline.group(0).strip()
-
-    return None
-
-
-# ===========================
-# OBTENER MEMORIA (SIN CAMBIOS)
-# ===========================
-def _obtener_memoria(user_id):
-    MEMORY_FILE = "user_memory.json"
-
 def _cargar_memoria():
     if not os.path.exists(MEMORY_FILE):
         return {}
